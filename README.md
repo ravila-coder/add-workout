@@ -1,6 +1,6 @@
 # Workout Tracker · Addem Capital
 
-Plataforma interna del comité de Workout para el seguimiento semanal de acreditadas (TGT, Verqor, Mattilda, Ozon, Aviva). Gestor de tareas tipo Asana: mobile-first, con dashboard de métricas, timeline de actividad, comentarios, adjuntos vinculados a Google Drive y exportación de la "Agenda de la semana" en PDF o Excel.
+Plataforma interna de Workout para el seguimiento semanal de acreditadas (TGT, Verqor, Mattilda, Ozon, Aviva). Gestor de tareas tipo Asana: mobile-first, con dashboard de métricas, timeline de actividad, comentarios, adjuntos vinculados a Google Drive y exportación de la "Agenda de la semana" en PDF o Excel.
 
 ## Estructura
 
@@ -37,8 +37,12 @@ Los datos se guardan en `localStorage` del navegador (o en `window.storage` cuan
 
 ## Adjuntos y Google Drive
 
-Un sitio estático no puede subir archivos directamente a Drive (requiere OAuth de Google). El flujo implementado: el botón **Abrir carpeta de Drive** lleva a la carpeta compartida del comité; ahí se sube el archivo y se pega el enlace en la tarea, que queda guardado para consulta posterior. Si más adelante se desea subida directa, se puede integrar el Google Drive Picker/API con OAuth.
+Un sitio estático no puede subir archivos directamente a Drive (requiere OAuth de Google). El flujo implementado: el botón **Abrir carpeta de Drive** lleva a la carpeta compartida; ahí se sube el archivo y se pega el enlace en la tarea, que queda guardado para consulta posterior. Si más adelante se desea subida directa, se puede integrar el Google Drive Picker/API con OAuth.
+
+## Integración con Asana
+
+Desde el menú de usuario → **Conectar con Asana**. Requiere un Personal Access Token (Asana → My apps → Create token) y el ID numérico del proyecto destino (visible en la URL del proyecto). "Sincronizar ahora" crea en Asana las tareas nuevas y actualiza las ya enviadas (título con prefijo de acreditada, notas con metadatos y adjuntos, fecha compromiso y estado de completada); el `gid` de Asana queda guardado en cada tarea para futuras actualizaciones. La API de Asana acepta llamadas desde el navegador (CORS), por lo que funciona en el sitio desplegado sin backend; el token queda en el almacenamiento local del navegador, adecuado solo para uso interno de confianza.
 
 ## Personalización
 
-Catálogos (usuarios, acreditadas, estatus, prioridades), credenciales y la URL de la carpeta de Drive viven en `js/data.js` (`CONFIG`). Los tokens del branding (tomados del Addem Capital Design System: Verde Oscuro `#0D473D`, Verde Acento `#B0EBC2`, Carbón, Gris, Off-White; Inter Tight 300/600) están como variables CSS al inicio de `css/styles.css`. Por indicación del comité no se usa Cutive Mono: el rol mono (datos, eyebrows, etiquetas) lo cubre la pila monoespaciada del sistema.
+Catálogos (usuarios, acreditadas, estatus, prioridades), credenciales y la URL de la carpeta de Drive viven en `js/data.js` (`CONFIG`). Los tokens del branding (tomados del Addem Capital Design System: Verde Oscuro `#0D473D`, Verde Acento `#B0EBC2`, Carbón, Gris, Off-White; Inter Tight 300/600) están como variables CSS al inicio de `css/styles.css`. Por indicación del cliente toda la interfaz usa exclusivamente Inter Tight (300/600), incluidos datos, eyebrows y etiquetas.

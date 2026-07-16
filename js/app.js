@@ -1,17 +1,18 @@
 /* ================================================================
-   app.js — Workout Tracker · Addem Capital
-   Vistas: Dashboard · Tareas · Timeline
+   app.js — Workout · Addem Capital
+   Vistas: Tareas (con resumen integrado) · Timeline
    ================================================================ */
 
-let state = null;                 // { tareas, actividad, catalogos }
+let state = null;                 // { tareas, actividad, catalogos, asana }
 let session = { auth: false, user: null };
-let filtros = { acreditada: "", responsable: "", estatus: "", prioridad: "", fecha: "" };
-let editandoId = null;            // id de tarea en edición (null = nueva)
+let filtros = { acreditada: "", responsable: "", estatus: "", prioridad: "", fecha: "", kpi: "" };
+let editandoId = null;
+let detalleId = null;
 
 /* ---------------- Utilidades ---------------- */
-const icon = (n) => `<svg class="ic"><use href="#i-${n}"/></svg>`;
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
+const icon = (n) => `<svg class="ic"><use href="#i-${n}"/></svg>`;
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 const hoyISO = () => new Date().toISOString().slice(0, 10);
 
@@ -40,7 +41,7 @@ function toast(msg) {
   t.textContent = msg;
   t.classList.add("show");
   clearTimeout(t._h);
-  t._h = setTimeout(() => t.classList.remove("show"), 2400);
+  t._h = setTimeout(() => t.classList.remove("show"), 2600);
 }
 function claseEstatus(st) { return "st-" + st.toLowerCase().replace(/\s|ó|é/g, m => ({ " ":"", "ó":"o", "é":"e" }[m])); }
 
@@ -55,9 +56,14 @@ function registrar(accion, texto) {
 async function init() {
   const guardado = await Store.load();
   state = guardado || seedState();
+  if (!state.asana) state.asana = { token: "", project: "" };   // migración
   if (!guardado) await guardar();
   poblarSelects();
   $("#loginForm").addEventListener("submit", onLogin);
+  document.addEventListener("click", (e) => {
+    const menu = $("#userMenu");
+    if (menu.classList.contains("open") && !e.target.closest(".user-wrap")) menu.classList.remove("open");
+  });
   render();
 }
 
@@ -79,7 +85,29 @@ function elegirUsuario(nombre) {
   registrar("sesion", `<b>${esc(nombre)}</b> inició sesión en el sistema`);
   guardar();
   render();
-  irA("dashboard");
+  irA("tareas");
+}
+
+/* ---------------- Menú de usuario ---------------- */
+function toggleMenu(e) {
+  e.stopPropagation();
+  const menu = $("#userMenu");
+  const abrir = !menu.classList.contains("open");
+  menu.classList.toggle("open", abrir);
+  if (abrir) $("#umHead").innerHTML = `${avatar(session.user, true)}<div><div class="n">${esc(session.user)}</div><div class="r">Workout · Addem Capital</div></div>`;
+}
+function cerrarMenu() { $("#userMenu").classList.remove("open"); }
+
+function cambiarUsuario() { cerrarMenu(); session.user = null; render(); }
+
+function cerrarSesion() {
+  cerrarMenu();
+  registrar("sesion", `<b>${esc(session.user)}</b> cerró sesión`);
+  guardar();
+  session = { auth: false, user: null };
+  $("#loginUser").value = ""; $("#loginPass").value = "";
+  render();
+  toast("Sesión cerrada");
 }
 
 /* ---------------- Render raíz ---------------- */
@@ -95,7 +123,8 @@ function render() {
     return;
   }
   $("#topUser").innerHTML = `${avatar(session.user, true)} ${esc(session.user)}`;
-  renderDashboard();
+  renderResumen();
+  renderChips();
   renderTareas();
   renderTimeline();
 }
@@ -107,78 +136,147 @@ function irA(vista) {
   window.scrollTo({ top: 0 });
 }
 
-/* ---------------- Dashboard ---------------- */
-function renderDashboard() {
+/* ---------------- Resumen (KPIs interactivos) ---------------- */
+function metricas() {
   const ts = state.tareas;
   const hoy = hoyISO();
   const abiertas = ts.filter(t => t.estatus !== "Completada");
   const vencidas = abiertas.filter(t => t.fechaCompromiso && t.fechaCompromiso < hoy);
-
-  // Semana actual (lunes → domingo)
   const d = new Date(); const dia = (d.getDay() + 6) % 7;
   const lunes = new Date(d); lunes.setDate(d.getDate() - dia);
   const lunesISO = lunes.toISOString().slice(0, 10);
-  const completadasSemana = ts.filter(t => t.estatus === "Completada" && t.fechaConclusion && t.fechaConclusion >= lunesISO);
-
-  $("#kpis").innerHTML = `
-    <div class="kpi"><div class="num">${abiertas.length}</div><div class="lbl">Tareas abiertas</div></div>
-    <div class="kpi warn"><div class="num">${vencidas.length}</div><div class="lbl">Vencidas</div></div>
-    <div class="kpi done"><div class="num">${completadasSemana.length}</div><div class="lbl">Completadas esta semana</div></div>
-    <div class="kpi"><div class="num">${ts.length}</div><div class="lbl">Total en seguimiento</div></div>`;
-
-  const porGrupo = (campo, lista) => {
-    const cuentas = lista.map(k => [k, abiertas.filter(t => t[campo] === k).length]).filter(x => x[1] > 0)
-      .sort((a, b) => b[1] - a[1]);
-    const max = Math.max(1, ...cuentas.map(x => x[1]));
-    return cuentas.map(([k, n]) => `
-      <div class="bar-row">
-        <span class="name">${esc(k)}</span>
-        <div class="bar-track"><div class="bar-fill" style="width:${(n / max) * 100}%"></div></div>
-        <span class="cnt">${n}</span>
-      </div>`).join("") || `<div class="hint">Sin tareas abiertas.</div>`;
-  };
-  $("#porResponsable").innerHTML = porGrupo("responsable", state.catalogos.usuarios);
-  $("#porAcreditada").innerHTML = porGrupo("acreditada", state.catalogos.acreditadas);
+  const semana = ts.filter(t => t.estatus === "Completada" && t.fechaConclusion && t.fechaConclusion >= lunesISO);
+  return { abiertas, vencidas, semana, total: ts };
 }
 
-/* ---------------- Tareas ---------------- */
+function renderResumen() {
+  const m = metricas();
+  const kpi = (id, num, lbl, cls) => `
+    <div class="kpi ${cls || ""} ${filtros.kpi === id ? "sel" : ""}" onclick="filtrarKpi('${id}')" title="Filtrar la lista">
+      <div class="num">${num}</div><div class="lbl">${lbl}</div>
+    </div>`;
+  $("#kpis").innerHTML =
+    kpi("abiertas", m.abiertas.length, "Tareas abiertas") +
+    kpi("vencidas", m.vencidas.length, "Vencidas", "warn") +
+    kpi("semana", m.semana.length, "Completadas esta semana", "mint") +
+    kpi("", m.total.length, "Total en seguimiento");
+  $("#navBadge").textContent = m.abiertas.length;
+}
+
+function filtrarKpi(id) {
+  filtros.kpi = (filtros.kpi === id) ? "" : id;
+  renderResumen();
+  renderTareas();
+}
+
+/* ---------------- Chips de acreditadas ---------------- */
+function renderChips() {
+  const abiertasPor = (a) => state.tareas.filter(t => t.acreditada === a && t.estatus !== "Completada").length;
+  const chip = (a) => `
+    <button class="chip ${filtros.acreditada === a ? "on" : ""}" onclick="filtrarAcreditada('${esc(a)}')">
+      ${esc(a)}<span class="n">${abiertasPor(a)}</span>
+    </button>`;
+  $("#chipsAcred").innerHTML =
+    `<button class="chip ${!filtros.acreditada ? "on" : ""}" onclick="filtrarAcreditada('')">Todas</button>` +
+    state.catalogos.acreditadas.map(chip).join("") +
+    `<button class="chip add" onclick="abrirNuevaAcreditada()">${icon("plus")}Acreditada</button>`;
+}
+
+function filtrarAcreditada(a) {
+  filtros.acreditada = (filtros.acreditada === a) ? "" : a;
+  renderChips();
+  renderTareas();
+}
+
+/* ---------------- Catálogo de acreditadas ---------------- */
+function abrirNuevaAcreditada() {
+  cerrarMenu();
+  $("#nAcreditada").value = "";
+  $("#acredOverlay").classList.add("open");
+  setTimeout(() => $("#nAcreditada").focus(), 60);
+}
+function cerrarNuevaAcreditada() { $("#acredOverlay").classList.remove("open"); }
+
+async function guardarAcreditada(e) {
+  e.preventDefault();
+  const nombre = $("#nAcreditada").value.trim();
+  if (!nombre) return;
+  const existe = state.catalogos.acreditadas.find(a => a.toLowerCase() === nombre.toLowerCase());
+  if (existe) { toast(`“${existe}” ya está en el catálogo`); return; }
+  state.catalogos.acreditadas.push(nombre);
+  registrar("creo", `<b>${esc(session.user)}</b> agregó la acreditada <b>${esc(nombre)}</b> al catálogo`);
+  await guardar();
+  poblarSelects();
+  cerrarNuevaAcreditada();
+  render();
+  toast(`Acreditada “${nombre}” agregada`);
+  // Si venía del formulario de tarea, seleccionarla
+  if ($("#formOverlay").classList.contains("open")) $("#tAcreditada").value = nombre;
+}
+
+function siNuevaAcreditada(sel) {
+  if (sel.value === "__nueva__") {
+    sel.value = state.catalogos.acreditadas[0] || "";
+    abrirNuevaAcreditada();
+  }
+}
+
+/* ---------------- Selects y filtros ---------------- */
 function poblarSelects() {
   const op = (arr, todos) => (todos ? `<option value="">${todos}</option>` : "") + arr.map(v => `<option>${esc(v)}</option>`).join("");
-  $("#fAcreditada").innerHTML = op(state.catalogos.acreditadas, "Todas las acreditadas");
-  $("#fResponsable").innerHTML = op(state.catalogos.usuarios, "Todos los responsables");
-  $("#fEstatus").innerHTML = op(state.catalogos.estatus, "Todos los estatus");
-  $("#fPrioridad").innerHTML = op(state.catalogos.prioridades, "Todas las prioridades");
-  $("#tAcreditada").innerHTML = op(state.catalogos.acreditadas);
+  $("#fResponsable").innerHTML = op(state.catalogos.usuarios, "Responsable: todos");
+  $("#fEstatus").innerHTML = op(state.catalogos.estatus, "Estatus: todos");
+  $("#fPrioridad").innerHTML = op(state.catalogos.prioridades, "Prioridad: todas");
+  $("#tAcreditada").innerHTML = op(state.catalogos.acreditadas) + `<option value="__nueva__">+ Nueva acreditada…</option>`;
   $("#tResponsable").innerHTML = `<option value="">Sin asignar</option>` + op(state.catalogos.usuarios);
   $("#tPrioridad").innerHTML = op(state.catalogos.prioridades);
   $("#tEstatus").innerHTML = op(state.catalogos.estatus);
 }
 
+function toggleFiltros() {
+  $("#filtersWrap").classList.toggle("open");
+  $("#filtersToggle").classList.toggle("open");
+}
+
 function leerFiltros() {
-  filtros = {
-    acreditada: $("#fAcreditada").value,
-    responsable: $("#fResponsable").value,
-    estatus: $("#fEstatus").value,
-    prioridad: $("#fPrioridad").value,
-    fecha: $("#fFecha").value
-  };
+  filtros.responsable = $("#fResponsable").value;
+  filtros.estatus = $("#fEstatus").value;
+  filtros.prioridad = $("#fPrioridad").value;
+  filtros.fecha = $("#fFecha").value;
+  actualizarContadorFiltros();
   renderTareas();
 }
+function actualizarContadorFiltros() {
+  const n = ["responsable","estatus","prioridad","fecha"].filter(k => filtros[k]).length;
+  const el = $("#fCount");
+  el.style.display = n ? "grid" : "none";
+  el.textContent = n;
+}
 function limpiarFiltros() {
-  ["fAcreditada","fResponsable","fEstatus","fPrioridad","fFecha"].forEach(id => $("#" + id).value = "");
-  leerFiltros();
+  ["fResponsable","fEstatus","fPrioridad","fFecha"].forEach(id => $("#" + id).value = "");
+  filtros = { acreditada: "", responsable: "", estatus: "", prioridad: "", fecha: "", kpi: "" };
+  actualizarContadorFiltros();
+  renderChips();
+  renderResumen();
+  renderTareas();
 }
 
 function tareasFiltradas() {
-  return state.tareas.filter(t =>
-    (!filtros.acreditada || t.acreditada === filtros.acreditada) &&
-    (!filtros.responsable || t.responsable === filtros.responsable) &&
-    (!filtros.estatus || t.estatus === filtros.estatus) &&
-    (!filtros.prioridad || t.prioridad === filtros.prioridad) &&
-    (!filtros.fecha || t.fechaCompromiso === filtros.fecha)
-  );
+  const hoy = hoyISO();
+  return state.tareas.filter(t => {
+    if (filtros.acreditada && t.acreditada !== filtros.acreditada) return false;
+    if (filtros.responsable && t.responsable !== filtros.responsable) return false;
+    if (filtros.estatus && t.estatus !== filtros.estatus) return false;
+    if (filtros.prioridad && t.prioridad !== filtros.prioridad) return false;
+    if (filtros.fecha && t.fechaCompromiso !== filtros.fecha) return false;
+    if (filtros.kpi === "abiertas" && t.estatus === "Completada") return false;
+    if (filtros.kpi === "vencidas" && !(t.estatus !== "Completada" && t.fechaCompromiso && t.fechaCompromiso < hoy)) return false;
+    if (filtros.kpi === "semana" && !(t.estatus === "Completada")) return false;
+    return true;
+  });
 }
 
+/* ---------------- Lista de tareas ---------------- */
 function renderTareas() {
   const cont = $("#taskList");
   const lista = tareasFiltradas();
@@ -194,7 +292,6 @@ function renderTareas() {
   const grupos = state.catalogos.acreditadas
     .map(a => [a, lista.filter(t => t.acreditada === a).sort(orden)])
     .filter(g => g[1].length);
-  // acreditadas fuera de catálogo (por si se crean nuevas)
   const extra = lista.filter(t => !state.catalogos.acreditadas.includes(t.acreditada));
   if (extra.length) grupos.push(["Otras", extra.sort(orden)]);
 
@@ -255,7 +352,7 @@ function abrirFormulario(id) {
   $("#formTitle").textContent = t ? "Editar tarea" : "Nueva tarea";
   $("#tTitulo").value = t?.titulo || "";
   $("#tDescripcion").value = t?.descripcion || "";
-  $("#tAcreditada").value = t?.acreditada || state.catalogos.acreditadas[0];
+  $("#tAcreditada").value = t?.acreditada || filtros.acreditada || state.catalogos.acreditadas[0];
   $("#tResponsable").value = t?.responsable || "";
   $("#tFecha").value = t?.fechaCompromiso || "";
   $("#tPrioridad").value = t?.prioridad || "Media";
@@ -278,7 +375,7 @@ async function guardarTarea(e) {
     prioridad: $("#tPrioridad").value,
     estatus: $("#tEstatus").value
   };
-  if (!datos.titulo) return;
+  if (!datos.titulo || datos.acreditada === "__nueva__") return;
 
   if (editandoId) {
     const t = state.tareas.find(x => x.id === editandoId);
@@ -332,6 +429,7 @@ async function duplicarTarea() {
   copia.fechaConclusion = null; copia.completadoPor = null;
   copia.creadoPor = session.user;
   copia.comentarios = []; copia.adjuntos = [];
+  delete copia.asanaGid;
   state.tareas.push(copia);
   registrar("creo", `<b>${esc(session.user)}</b> duplicó la tarea “${esc(t.titulo)}”`);
   await guardar();
@@ -341,7 +439,6 @@ async function duplicarTarea() {
 }
 
 /* ---------------- Detalle ---------------- */
-let detalleId = null;
 function abrirDetalle(id) {
   detalleId = id;
   const t = state.tareas.find(x => x.id === id);
@@ -356,12 +453,13 @@ function abrirDetalle(id) {
     <div class="item"><div class="k">Prioridad</div><div class="v">${esc(t.prioridad)}</div></div>
     <div class="item"><div class="k">Fecha compromiso</div><div class="v">${fmtFecha(t.fechaCompromiso)}</div></div>
     <div class="item"><div class="k">Creada</div><div class="v">${fmtFecha(t.fechaCreacion)} · ${esc(t.creadoPor)}</div></div>
-    <div class="item"><div class="k">Concluida</div><div class="v">${t.fechaConclusion ? fmtFecha(t.fechaConclusion) + " · " + esc(t.completadoPor) : "—"}</div></div>`;
+    <div class="item"><div class="k">Concluida</div><div class="v">${t.fechaConclusion ? fmtFecha(t.fechaConclusion) + " · " + esc(t.completadoPor) : "—"}</div></div>
+    ${t.asanaGid ? `<div class="item"><div class="k">Asana</div><div class="v"><a href="https://app.asana.com/0/0/${esc(t.asanaGid)}/f" target="_blank" rel="noopener">Ver en Asana</a></div></div>` : ""}`;
   $("#dComentarios").innerHTML = t.comentarios.map(c => `
     <div class="comment">${avatar(c.user, true)}
       <div class="bubble"><span class="who">${esc(c.user)}</span><span class="when">${fmtHora(c.ts)}</span>
       <div class="txt">${esc(c.texto)}</div></div>
-    </div>`).join("") || `<div class="hint" style="font-size:13px;color:var(--tinta-60)">Aún no hay comentarios.</div>`;
+    </div>`).join("") || `<div style="font-size:13px;color:var(--text-muted)">Aún no hay comentarios.</div>`;
   $("#dAdjuntos").innerHTML = t.adjuntos.map((a, i) => `
     <div class="attach"><span class="ico">${icon("file")}</span><span class="nm">${esc(a.nombre)}</span>
       <a href="${esc(a.url)}" target="_blank" rel="noopener">Abrir</a>
@@ -371,6 +469,7 @@ function abrirDetalle(id) {
   $("#detailOverlay").classList.add("open");
 }
 function cerrarDetalle() { $("#detailOverlay").classList.remove("open"); }
+function editarDesdeDetalle() { abrirFormulario(detalleId); }
 
 async function cambiarEstatus(id, st) {
   const t = state.tareas.find(x => x.id === id);
@@ -433,12 +532,137 @@ function renderTimeline() {
     </div>`).join("") || `<div class="empty">Sin actividad todavía.</div>`;
 }
 
-/* ---------------- Otros ---------------- */
-function cambiarUsuario() { session.user = null; render(); }
-function editarDesdeDetalle() { abrirFormulario(detalleId); }
+/* ================================================================
+   Integración con Asana (API REST v1.0, soporta CORS)
+   Mapea: titulo→name, descripcion+metadatos→notes,
+   fechaCompromiso→due_on, estatus Completada→completed.
+   Guarda el gid de Asana en cada tarea para actualizarla después.
+   ================================================================ */
+const ASANA_API = "https://app.asana.com/api/1.0";
 
+function abrirAsana() {
+  cerrarMenu();
+  $("#asToken").value = state.asana.token || "";
+  $("#asProject").value = state.asana.project || "";
+  pintarEstadoAsana(state.asana.token && state.asana.project ? "cfg" : "off");
+  $("#asanaOverlay").classList.add("open");
+}
+function cerrarAsana() { $("#asanaOverlay").classList.remove("open"); }
+
+function pintarEstadoAsana(modo, txt) {
+  const el = $("#asanaStatus");
+  el.className = "asana-status" + (modo === "ok" ? " ok" : modo === "err" ? " err" : "");
+  $("#asanaStatusTxt").textContent = txt || (
+    modo === "cfg" ? "Credenciales guardadas — prueba la conexión" : "Sin conexión configurada");
+}
+
+async function leerCredencialesAsana() {
+  const token = $("#asToken").value.trim();
+  const project = $("#asProject").value.trim().replace(/\D/g, "");
+  if (!token || !project) { pintarEstadoAsana("err", "Faltan el token o el ID del proyecto"); return null; }
+  if (token !== state.asana.token || project !== state.asana.project) {
+    state.asana.token = token; state.asana.project = project;
+    await guardar();
+  }
+  return { token, project };
+}
+
+async function asanaFetch(ruta, opciones = {}) {
+  const r = await fetch(ASANA_API + ruta, Object.assign({}, opciones, {
+    headers: {
+      "Authorization": "Bearer " + state.asana.token,
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    }
+  }));
+  const cuerpo = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const msg = cuerpo?.errors?.[0]?.message || `Error HTTP ${r.status}`;
+    throw new Error(msg);
+  }
+  return cuerpo.data;
+}
+
+async function probarAsana() {
+  const cred = await leerCredencialesAsana();
+  if (!cred) return;
+  pintarEstadoAsana("cfg", "Probando conexión…");
+  try {
+    const yo = await asanaFetch("/users/me");
+    const proyecto = await asanaFetch(`/projects/${cred.project}?opt_fields=name`);
+    pintarEstadoAsana("ok", `Conectado como ${yo.name} · Proyecto “${proyecto.name}”`);
+  } catch (e) {
+    const pista = (e instanceof TypeError)
+      ? "No se pudo llegar a Asana. Si estás en la vista previa del chat, usa la versión desplegada."
+      : e.message;
+    pintarEstadoAsana("err", pista);
+  }
+}
+
+function notasAsana(t) {
+  const lineas = [
+    t.descripcion || "",
+    "",
+    "— Workout · Addem Capital —",
+    `Acreditada: ${t.acreditada}`,
+    `Responsable: ${t.responsable || "Sin asignar"}`,
+    `Prioridad: ${t.prioridad}`,
+    `Estatus: ${t.estatus}`,
+    `Creada: ${t.fechaCreacion} por ${t.creadoPor}`
+  ];
+  if (t.fechaConclusion) lineas.push(`Concluida: ${t.fechaConclusion} por ${t.completadoPor}`);
+  if (t.adjuntos.length) {
+    lineas.push("", "Adjuntos:");
+    t.adjuntos.forEach(a => lineas.push(`· ${a.nombre}: ${a.url}`));
+  }
+  return lineas.join("\n").trim();
+}
+
+async function sincronizarAsana() {
+  const cred = await leerCredencialesAsana();
+  if (!cred) return;
+  pintarEstadoAsana("cfg", "Sincronizando…");
+  let creadas = 0, actualizadas = 0, fallas = 0;
+  for (const t of state.tareas) {
+    const cuerpo = {
+      data: {
+        name: `[${t.acreditada}] ${t.titulo}`,
+        notes: notasAsana(t),
+        completed: t.estatus === "Completada",
+        due_on: t.fechaCompromiso || null
+      }
+    };
+    try {
+      if (t.asanaGid) {
+        await asanaFetch(`/tasks/${t.asanaGid}`, { method: "PUT", body: JSON.stringify(cuerpo) });
+        actualizadas++;
+      } else {
+        cuerpo.data.projects = [cred.project];
+        const creada = await asanaFetch("/tasks", { method: "POST", body: JSON.stringify(cuerpo) });
+        t.asanaGid = creada.gid;
+        creadas++;
+      }
+    } catch (e) {
+      fallas++;
+      if (e instanceof TypeError) {
+        pintarEstadoAsana("err", "No se pudo llegar a Asana. Si estás en la vista previa del chat, usa la versión desplegada.");
+        return;
+      }
+      pintarEstadoAsana("err", `Error de Asana: ${e.message}`);
+    }
+  }
+  await guardar();
+  if (!fallas) {
+    pintarEstadoAsana("ok", `Sincronizado: ${creadas} creadas, ${actualizadas} actualizadas`);
+    registrar("edito", `<b>${esc(session.user)}</b> sincronizó con Asana (${creadas} creadas, ${actualizadas} actualizadas)`);
+    renderTimeline();
+    toast("Tareas enviadas a Asana");
+  }
+}
+
+/* ---------------- Otros ---------------- */
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape") { cerrarFormulario(); cerrarDetalle(); }
+  if (e.key === "Escape") { cerrarFormulario(); cerrarDetalle(); cerrarNuevaAcreditada(); cerrarAsana(); cerrarMenu(); }
 });
 
 init();

@@ -47,7 +47,7 @@ function agendaDeLaSemana(tareas) {
     .foot{font-family:ui-monospace,Menlo,monospace;margin-top:22px;color:#8c8c8c;font-size:9px;text-transform:uppercase;letter-spacing:.08em}
     @page{margin:14mm}
   </style></head><body>
-  <h1>Agenda de la semana · Comité de Workout</h1>
+  <h1>Agenda de la semana · Workout</h1>
   <div class="sub">Addem Capital · Generada el ${fmtFecha(hoyISO)} · ${pendientes.length} tareas pendientes · Orden: fecha compromiso → prioridad → acreditada</div>
   <table>
     <thead><tr><th>Tarea / Acreditada</th><th>Responsable</th><th>Compromiso</th><th>Prioridad</th><th>Estatus</th><th>Comentario más reciente</th></tr></thead>
